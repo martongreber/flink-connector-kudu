@@ -47,8 +47,11 @@ import org.apache.kudu.shaded.com.google.common.collect.Lists;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.shaded.com.google.common.collect.ImmutableList;
 import org.testcontainers.shaded.com.google.common.io.Closer;
 import org.testcontainers.shaded.com.google.common.net.HostAndPort;
@@ -66,6 +69,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Base class for integration tests. */
 public class KuduTestBase {
 
+    private static final Logger log = LoggerFactory.getLogger("base logger");
     private static final String DOCKER_IMAGE = "apache/kudu:1.17.0";
     private static final Integer KUDU_MASTER_PORT = 7051;
     private static final Integer KUDU_TSERVER_PORT = 7050;
@@ -78,8 +82,8 @@ public class KuduTestBase {
         {1005, "A Teaspoon of Java", "Kevin Jones", 55.55, 55}
     };
     public static String[] columns = new String[] {"id", "title", "author", "price", "quantity"};
-    private static GenericContainer<?> master;
-    private static List<GenericContainer<?>> tServers;
+    public static GenericContainer<?> master;
+    public static List<GenericContainer<?>> tServers;
     private static HostAndPort masterAddress;
     private static KuduClient kuduClient;
 
@@ -92,12 +96,14 @@ public class KuduTestBase {
                 new GenericContainer<>(DOCKER_IMAGE)
                         .withExposedPorts(KUDU_MASTER_PORT, 8051)
                         .withCommand("master")
-                        .withEnv("MASTER_ARGS", "--unlock_unsafe_flags")
+                        .withEnv("MASTER_ARGS", "--unlock_unsafe_flags --use_hybrid_clock=true --time_source=builtin")
                         .withNetwork(network)
                         .withNetworkAliases("kudu-master");
         master.start();
         masterAddress =
                 HostAndPort.fromParts(master.getHost(), master.getMappedPort(KUDU_MASTER_PORT));
+        Slf4jLogConsumer logConsumer = new Slf4jLogConsumer(log);
+        master.followOutput(logConsumer);
 
         for (int instance = 1; instance <= NUMBER_OF_REPLICA; instance++) {
             String instanceName = "kudu-tserver-" + instance;
@@ -109,13 +115,14 @@ public class KuduTestBase {
                             .withEnv(
                                     "TSERVER_ARGS",
                                     "--fs_wal_dir=/var/lib/kudu/tserver --logtostderr --unlock_unsafe_flags"
-                                            + " --use_hybrid_clock=false --rpc_advertised_addresses="
+                                            + " --use_hybrid_clock=true --time_source=builtin --rpc_advertised_addresses="
                                             + instanceName)
                             .withNetwork(network)
                             .withNetworkAliases(instanceName)
                             .dependsOn(master);
             tableServer.start();
             tServersBuilder.add(tableServer);
+            tableServer.followOutput(logConsumer);
         }
         tServers = tServersBuilder.build();
 

@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class KuduSplitReader implements SourceReader<String, KuduSplit> {
 
@@ -25,6 +26,8 @@ public class KuduSplitReader implements SourceReader<String, KuduSplit> {
     private KuduClient kuduClient;            // KuduClient created and managed by the reader
     private KuduScanner scanner;
     private KuduSplit currentSplit;           // Track the current split being processed
+    private CompletableFuture<Void> availabilityFuture = new CompletableFuture<>();
+    private AtomicBoolean hasSignaledAvailability = new AtomicBoolean(false);
 
     public KuduSplitReader(SourceReaderContext context, String kuduMasterAddresses) {
         this.context = context;
@@ -38,31 +41,52 @@ public class KuduSplitReader implements SourceReader<String, KuduSplit> {
         // Create the KuduClient
         this.kuduClient = new KuduClient.KuduClientBuilder(kuduMasterAddresses).build();
         log.info("KuduSplitReader started.");
+        context.sendSplitRequest();
     }
 
     @Override
     public InputStatus pollNext(ReaderOutput<String> output) throws Exception {
+        log.info("pollNext() called");
         if (currentSplit == null) {
+            log.info("pollNext currentSplit is null!");
             output.markIdle(); // Mark idle if no split is assigned
-            return InputStatus.END_OF_INPUT;
+            resetAvailabilityFuture();
+            return InputStatus.NOTHING_AVAILABLE;
         }
 
         String splitId = currentSplit.splitId();
         SourceOutput<String> splitOutput = output.createOutputForSplit(splitId);
 
         try {
-            if (scanner != null && scanner.hasMoreRows()) {
-                for (RowResult row : scanner.nextRows()) {
-                    splitOutput.collect(row.toString()); // Emit the row
+            if (scanner != null) {
+                if (scanner.hasMoreRows()) {
+                    log.info("pollNext: scanner has some data!");
+                    for (RowResult row : scanner.nextRows()) {
+                        log.info("pollNext: " + row.toString());
+                        splitOutput.collect(row.toString()); // Emit the row
+                    }
+                    if (scanner.hasMoreRows()) {
+                        return InputStatus.MORE_AVAILABLE;
+                    } else {
+                        return InputStatus.END_OF_INPUT;
+                    }
+                } else {
+                    log.info("no more data in the split");
+                    output.releaseOutputForSplit(splitId);
+                    currentSplit = null;
+                    scanner.close();
+                    resetAvailabilityFuture();
+                    context.sendSplitRequest();
+                    return InputStatus.END_OF_INPUT;
                 }
-                return InputStatus.MORE_AVAILABLE; // Indicate more data to process
-            } else {
-                // No more rows, release the split output
-                output.releaseOutputForSplit(splitId);
-                currentSplit = null; // Mark the split as processed
-                return InputStatus.END_OF_INPUT;
+            }
+             else {
+                log.info("scanner is null");
+                return InputStatus.NOTHING_AVAILABLE;
             }
         } catch (Exception e) {
+            log.info("pollNext exception");
+            log.info(e.getMessage());
             output.releaseOutputForSplit(splitId);
             throw e;
         }
@@ -73,9 +97,22 @@ public class KuduSplitReader implements SourceReader<String, KuduSplit> {
         return currentSplit != null ? Collections.singletonList(currentSplit) : Collections.emptyList();
     }
 
+
     @Override
     public CompletableFuture<Void> isAvailable() {
-        return CompletableFuture.completedFuture(null); // Indicate the reader is always ready
+        return availabilityFuture;
+    }
+
+    private void resetAvailabilityFuture() {
+        if (hasSignaledAvailability.compareAndSet(true, false)) {
+            availabilityFuture = new CompletableFuture<>();
+        }
+    }
+
+    private void completeAvailabilityFuture() {
+        if (hasSignaledAvailability.compareAndSet(false, true)) {
+            availabilityFuture.complete(null);
+        }
     }
 
     @Override
@@ -83,20 +120,26 @@ public class KuduSplitReader implements SourceReader<String, KuduSplit> {
         // Called when no more splits will be assigned to this reader
     }
 
+
     @Override
     public void addSplits(List<KuduSplit> splits) {
         if (splits.size() != 1) {
-//            throw new IllegalStateException("KuduSplitReader expects exactly one split at a time");
+            throw new IllegalStateException("KuduSplitReader expects exactly one split at a time");
         }
 
         this.currentSplit = splits.get(0);
 
-        // Deserialize the scan token to create a Kudu scanner
         byte[] serializedToken = currentSplit.getSerializedScanToken();
         try {
             this.scanner = KuduScanToken.deserializeIntoScanner(serializedToken, kuduClient);
+            log.info("Deserialization into Kudu Scanner completed");
+
+
+            // Signal availability for pollNext
+            completeAvailabilityFuture();
         } catch (Exception e) {
-            log.info("KuduSplit deserialization failed.", e);
+            log.error("KuduSplit deserialization failed.", e);
+            availabilityFuture.completeExceptionally(e);
         }
     }
 

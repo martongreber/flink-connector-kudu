@@ -169,6 +169,7 @@ public class KuduSplitEnumerator implements SplitEnumerator<KuduSplit, KuduSourc
         long endHT = HybridTimeUtil.physicalAndLogicalToHTTimestamp(endMicros, 0) + 1;
 
         try {
+            log.info("Performing incremental scan.");
             List<KuduScanToken> tokens = kuduClient.newScanTokenBuilder(kuduTable)
                     .diffScan(startHT, endHT) // Use Hybrid Time for incremental range
                     .build();

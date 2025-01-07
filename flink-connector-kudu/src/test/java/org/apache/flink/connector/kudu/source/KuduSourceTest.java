@@ -49,6 +49,8 @@ import org.apache.kudu.client.*;
 import org.junit.platform.commons.util.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 
 import javax.xml.crypto.Data;
 import java.util.ArrayList;
@@ -61,70 +63,77 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class KuduSourceTest extends KuduTestBase {
     private final Logger log = LoggerFactory.getLogger(getClass());
+    private final Logger kudu_log = LoggerFactory.getLogger("kudu log");
     private static final String TEST_TABLE_NAME = UUID.randomUUID().toString();
 
-//    private void setUpTable() throws Exception {
-//        KuduClient client =  new KuduClient.KuduClientBuilder(getMasterAddress()).build();
-//
-//        // Set up a simple schema.
-//        List<ColumnSchema> columns = new ArrayList<>(2);
-//        columns.add(new ColumnSchema.ColumnSchemaBuilder("key", Type.INT32)
-//                .key(true)
-//                .build());
-//        columns.add(new ColumnSchema.ColumnSchemaBuilder("value", Type.STRING)
-//                .nullable(true)
-//                .build());
-//        Schema schema = new Schema(columns);
-//
-//        CreateTableOptions cto = new CreateTableOptions();
-//        List<String> hashKeys = new ArrayList<>(1);
-//        hashKeys.add("key");
-//        int numBuckets = 2;
-//        cto.addHashPartitions(hashKeys, numBuckets);
-//        cto.setNumReplicas(1);
-//
-//        // Create the table if it doesn't already exist.
-//        try {
-//            client.createTable(TEST_TABLE_NAME, schema, cto);
-//        } catch (KuduException e) {
-//            if (!e.getStatus().isAlreadyPresent()) {
-//                throw e; // Re-throw if the error is not about the table already existing
-//            }
-//        }
-//
-//        try {
-//            insertTestData(client, TEST_TABLE_NAME, 10);
-//        } catch (KuduException e) {}
-//    }
+    private void setUpTable() throws Exception {
+        Slf4jLogConsumer logConsumer = new Slf4jLogConsumer(kudu_log);
+        master.followOutput(logConsumer);
+        for(GenericContainer<?> tserver : tServers) {
+            tserver.followOutput(logConsumer);
+        }
 
-//    private void insertTestData(KuduClient client, String tableName, int numRows) throws KuduException {
-//        KuduTable table = client.openTable(tableName);
-//        KuduSession session = client.newSession();
-//        session.setFlushMode(SessionConfiguration.FlushMode.AUTO_FLUSH_BACKGROUND);
-//
-//        try {
-//            for (int i = 0; i < numRows; i++) {
-//                Insert insert = table.newInsert();
-//                PartialRow row = insert.getRow();
-//                row.addInt("key", i); // Primary key
-//                row.addString("value", "value-" + i); // Some string value
-//                session.apply(insert);
-//            }
-//            session.flush(); // Flush all pending writes
-//            // Check for errors
-//            RowErrorsAndOverflowStatus errors = session.getPendingErrors();
-//            if (errors.isOverflowed()) {
-//                System.err.println("Some insert errors were dropped due to overflow");
-//            }
-//            for (RowError error : errors.getRowErrors()) {
-//                System.err.println("Insert error: " + error.toString());
-//            }
-//        } finally {
-//            session.close();
-//            client.close();
-//        }
-//
-//    }
+        KuduClient client =  new KuduClient.KuduClientBuilder(getMasterAddress()).build();
+
+        // Set up a simple schema.
+        List<ColumnSchema> columns = new ArrayList<>(2);
+        columns.add(new ColumnSchema.ColumnSchemaBuilder("key", Type.INT32)
+                .key(true)
+                .build());
+        columns.add(new ColumnSchema.ColumnSchemaBuilder("value", Type.STRING)
+                .nullable(true)
+                .build());
+        Schema schema = new Schema(columns);
+
+        CreateTableOptions cto = new CreateTableOptions();
+        List<String> hashKeys = new ArrayList<>(1);
+        hashKeys.add("key");
+        int numBuckets = 2;
+        cto.addHashPartitions(hashKeys, numBuckets);
+        cto.setNumReplicas(1);
+
+        // Create the table if it doesn't already exist.
+        try {
+            client.createTable(TEST_TABLE_NAME, schema, cto);
+        } catch (KuduException e) {
+            if (!e.getStatus().isAlreadyPresent()) {
+                throw e; // Re-throw if the error is not about the table already existing
+            }
+        }
+
+        try {
+            insertTestData(client, TEST_TABLE_NAME, 10);
+        } catch (KuduException e) {}
+    }
+
+    private void insertTestData(KuduClient client, String tableName, int numRows) throws KuduException {
+        KuduTable table = client.openTable(tableName);
+        KuduSession session = client.newSession();
+        session.setFlushMode(SessionConfiguration.FlushMode.AUTO_FLUSH_BACKGROUND);
+
+        try {
+            for (int i = 0; i < numRows; i++) {
+                Insert insert = table.newInsert();
+                PartialRow row = insert.getRow();
+                row.addInt("key", i); // Primary key
+                row.addString("value", "value-" + i); // Some string value
+                session.apply(insert);
+            }
+            session.flush(); // Flush all pending writes
+            // Check for errors
+            RowErrorsAndOverflowStatus errors = session.getPendingErrors();
+            if (errors.isOverflowed()) {
+                System.err.println("Some insert errors were dropped due to overflow");
+            }
+            for (RowError error : errors.getRowErrors()) {
+                System.err.println("Insert error: " + error.toString());
+            }
+        } finally {
+            session.close();
+            client.close();
+        }
+
+    }
 
     private RowOperationMapper initOperationMapper(String[] cols) {
         return new RowOperationMapper(cols, AbstractSingleOperationMapper.KuduOperation.INSERT);
@@ -140,15 +149,15 @@ public class KuduSourceTest extends KuduTestBase {
 
         @Test
         public void testKuduSourceReadsData() throws Exception {
-//            try{
-//                setUpTable();
-//            } catch (Exception e) {
-//                log.error(e.getMessage());
-//            }
+            try{
+                setUpTable();
+            } catch (Exception e) {
+                log.error(e.getMessage());
+            }
 
-            KuduTableInfo tableInfo = booksTableInfo(TEST_TABLE_NAME, true);
-
-            setUpDatabase(tableInfo);
+//            KuduTableInfo tableInfo = booksTableInfo(TEST_TABLE_NAME, true);
+//
+//            setUpDatabase(tableInfo);
 
             // Set up Flink environment
             StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -158,41 +167,8 @@ public class KuduSourceTest extends KuduTestBase {
             DataStream<String> stream = env.fromSource(kuduSource,WatermarkStrategy.noWatermarks(),
                                             "Kudu Source Test");
             stream.print();
-            env.execute("Kudu Source Test");
+            env.execute("Kudu Test");
     }
 
-    @Test
-    public void testTest() throws  Exception {
-        // Set up Flink environment
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(1);
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(3, Time.of(10, TimeUnit.SECONDS)));
-
-        // Add a simple source that emits a string every second
-        env.addSource(new SimpleStringSource())
-                .name("String Source")
-                .print();
-
-        // Execute the Flink job
-        env.execute("Simple String Source Test");
-        log.info("Flink job submitted successfully.");
-    }
-    private static class SimpleStringSource implements SourceFunction<String> {
-        private volatile boolean running = true;
-
-        @Override
-        public void run(SourceContext<String> ctx) throws Exception {
-            int counter = 0;
-            while (running) {
-                ctx.collect("Hello Flink! Count: " + counter++);
-                Thread.sleep(1000); // Emit every second
-            }
-        }
-
-        @Override
-        public void cancel() {
-            running = false;
-        }
-    }
 }
 
